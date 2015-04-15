@@ -5,6 +5,7 @@ using System.IO.Ports;
 using System.Threading;
 using System.Collections.Generic;
 using System.Linq;
+using System.Collections.Concurrent;
 
 namespace ZwaveExplorer
 {
@@ -18,14 +19,17 @@ namespace ZwaveExplorer
 		private AutoResetEvent exit = new AutoResetEvent(false);
 		private Thread thread;
 
-		private Queue<byte> incomingBytes = new Queue<byte>();
+		private ConcurrentQueue<byte> incomingBytes = new ConcurrentQueue<byte>();
+		private ConcurrentQueue<Message> outboundMessages = new ConcurrentQueue<Message> ();
+
+		private Message pendingAcknowledgement;
 
 		public ZwaveListener(string portName)
 		{
 			port = new SerialPort (portName);
 			InitializePort (port);
 
-			this.thread = new Thread (new ThreadStart (Executive));
+			this.thread = new Thread (new ThreadStart (Pump));
 		}
 
 		public HandleMessage OnMessage;
@@ -42,7 +46,7 @@ namespace ZwaveExplorer
 			port.NewLine = System.Environment.NewLine;
 		}
 
-		private void Executive()
+		private void Pump()
 		{
 			while (!exit.WaitOne(0)) {
 
@@ -51,15 +55,53 @@ namespace ZwaveExplorer
 					exit.Set();
 				}
 
+				var slowLoop = true;
+
+				// Read bytes
+
 				int pendingBytes = this.port.BytesToRead;
 				if(pendingBytes > 0)
 				{
-					byte incomingByte = (byte)this.port.ReadByte();
-					this.incomingBytes.Enqueue(incomingByte);
-					Console.WriteLine (incomingByte.ToString ("x"));
+					slowLoop = false;
+
+					Log (string.Format("Received {0} bytes",pendingBytes));
+
+					for (int index = 0; index < pendingBytes; index++) {
+						byte incomingByte = (byte)this.port.ReadByte();
+						this.incomingBytes.Enqueue(incomingByte);
+						Console.WriteLine (incomingByte.ToString ("x"));
+					}
+
+					Message incomingMessage = Message.Parse (pendingBytes, this.incomingBytes);
+
+					if (incomingMessage is Acknowledge && pendingAcknowledgement != null) 
+					{
+						pendingAcknowledgement = null;
+					}
+					else if (incomingMessage != null) 
+					{
+						this.OnMessage (incomingMessage);
+					}
 				}
-				Thread.Sleep(10);
+					
+				if (outboundMessages.Count > 0 && pendingAcknowledgement == null) {
+
+					if (outboundMessages.TryDequeue (out pendingAcknowledgement)) {
+						slowLoop = false;
+						byte[] messageBytes = pendingAcknowledgement.GetChecksumBytes ().ToArray();
+						port.Write (messageBytes, 0, messageBytes.Length);
+					}
+				}
+
+				if (slowLoop) {
+					Thread.Sleep(10);
+				}
 			}
+		}
+
+		public void Log(Object str)
+		{
+			Console.WriteLine("{0:yyyy-MM-dd:hh:mm:ss} {1}", DateTime.Now, str);
 		}
 
 		public void Start()
@@ -75,8 +117,7 @@ namespace ZwaveExplorer
 
 		public void Send (Message message)
 		{
-			byte[] outgoingBytes = message.GetBytes ().ToArray();
-			this.port.Write (outgoingBytes, 0, outgoingBytes.Length);
+			this.outboundMessages.Enqueue (message);
 		}
 
 		private void Dispose(bool disposing)
@@ -94,6 +135,5 @@ namespace ZwaveExplorer
 				thread = null;
 			}
 		}
-
 	}
 }

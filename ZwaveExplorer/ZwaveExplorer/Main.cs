@@ -24,7 +24,7 @@ namespace ZwaveExplorer
 				listener.Start();
 
 				// Send discovery
-				listener.Send(new Discover());
+				listener.Send(new Discovery());
 
 				exitConsole.WaitOne ();
 			}
@@ -36,6 +36,7 @@ namespace ZwaveExplorer
 
 		static bool HandleMessage(Message msg)
 		{
+			Console.WriteLine (msg.ToString ());
 			return false;
 		}
 
